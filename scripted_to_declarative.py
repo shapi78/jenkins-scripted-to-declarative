@@ -240,6 +240,56 @@ def split_preamble(top_level: list[dict]) -> tuple[list[dict], list[dict]]:
     return top_level[:i], top_level[i:]
 
 
+def brief(stmt: dict) -> str:
+    """One-line human description of a statement, for diagnostics."""
+    if stmt.get("kind") == "call":
+        return f"{stmt.get('name') or '<call>'}() at line {stmt['line']}"
+    return f"{stmt.get('kind')} statement at line {stmt['line']}"
+
+
+def closure_bodies_of(stmt: dict) -> list[list[dict]]:
+    """Every closure body directly attached to a statement: a trailing closure
+    (`dir('x') { ... }`), closures passed as named args (`parallel a: {...}`),
+    and the sub-bodies of a try/catch/finally."""
+    bodies = []
+    tc = stmt.get("trailingClosure")
+    if tc and tc.get("body") is not None:
+        bodies.append(tc["body"])
+    for entry in stmt.get("namedArgs") or []:
+        if entry.get("kind") == "closure" and entry.get("closure", {}).get("body") is not None:
+            bodies.append(entry["closure"]["body"])
+    if stmt.get("kind") == "try":
+        bodies.append(stmt.get("tryBody") or [])
+        for c in stmt.get("catches") or []:
+            bodies.append(c.get("body") or [])
+        bodies.append(stmt.get("finallyBody") or [])
+    return [b for b in bodies if b]
+
+
+def find_buried_node_calls(stmts: list[dict], chain: tuple[str, ...] = ()) -> list[tuple[dict, tuple[str, ...]]]:
+    """Find `node {}` calls that are NOT at the level being converted - i.e.
+    nested inside some other block. Returns (statement, enclosing call names).
+
+    This exists purely for diagnostics, and only matters when the top-level
+    search for a node {} has already failed. A buried node is the single most
+    common reason for that: wrapping the whole pipeline in `timestamps {}`,
+    `ansiColor {}`, `podTemplate {}`, `withCredentials {}`, `ws {}` etc. and
+    putting the node inside is idiomatic Scripted, but it means the agent that
+    Declarative needs at the top of the file is somewhere this tool will not
+    hoist it from - and a copied-through `node {}` inside a `steps {}` block
+    is not legal Declarative, so the user needs to be told rather than handed
+    output that only looks converted."""
+    found = []
+    for st in stmts:
+        name = st.get("name") if st.get("kind") == "call" else None
+        if name == "node" and chain:
+            found.append((st, chain))
+        inner = chain + (name,) if name else chain
+        for body in closure_bodies_of(st):
+            found.extend(find_buried_node_calls(body, inner))
+    return found
+
+
 def looks_like_parallel_map(stmt: dict) -> bool:
     return (
         stmt.get("kind") == "call"
@@ -607,13 +657,37 @@ def convert(dump: dict, extractor: Extractor, report: Report) -> str:
         if after:
             stages.append(make_synthetic_stage("Cleanup", after, extractor, stage_indent, report))
     else:
+        found_desc = "; ".join(brief(st) for st in body_stmts[:8])
+        if len(body_stmts) > 8:
+            found_desc += f"; ... ({len(body_stmts) - 8} more)"
         report.warn(
             "No single top-level node {} (or sequence of node {} blocks) wrapping the "
             "whole file was found. Defaulting to `agent any` for the whole pipeline - "
             "verify this matches how the original Scripted pipeline was actually "
-            "invoked (e.g. run via a node provided externally by the job configuration)."
+            "invoked (e.g. run via a node provided externally by the job configuration). "
+            f"What was found at the top level instead: {found_desc}."
         )
         agent_text = "agent any"
+
+        # A node {} buried inside another block is the usual reason we got
+        # here, and it is NOT a benign warning: the enclosing block gets
+        # copied through as a step, which puts a node {} - and any stage {}
+        # inside it - inside a Declarative steps {} block, which Jenkins
+        # rejects. Say so explicitly rather than emitting output that merely
+        # looks converted.
+        for st, chain in find_buried_node_calls(body_stmts):
+            wrappers = " > ".join(f"{c}{{}}" for c in chain)
+            report.warn(
+                f"node{{}} at line {st['line']} is nested inside {wrappers}, so it was NOT "
+                "turned into an `agent` - the whole block was copied through as a step, "
+                "which means the generated file has a node{} (and any stage{} inside it) "
+                "in a steps{} block. That is not valid Declarative and Jenkins will reject "
+                "it. Restructure by hand: hoist the node to the pipeline's `agent` (or a "
+                "per-stage `agent{}`), and re-express the enclosing block as a Declarative "
+                "directive where one exists (e.g. timestamps{} -> `options { timestamps() }`) "
+                "or move it inside the stage's steps."
+            )
+
         stages = process_body_as_stages(body_stmts, extractor, stage_indent, report)
 
     out = []
@@ -659,6 +733,11 @@ def syntax_check(path: str, report: Report):
     libraries. Declarative *structure* is validated by Jenkins's own
     declarative-linter instead - see README, "Validation".
     """
+    if not open(path).read().strip():
+        # Nothing was converted (the caller already warned why); an empty file
+        # is not a syntax error, and handing it to the parser only produces a
+        # confusing "A source must be specified".
+        return
     try:
         run_ast_dump(path)
     except (RuntimeError, ValueError) as exc:
