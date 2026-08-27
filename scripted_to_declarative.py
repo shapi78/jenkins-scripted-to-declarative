@@ -195,6 +195,51 @@ def is_dynamic_control(stmt: dict) -> bool:
     return stmt.get("kind") in ("if", "for", "while", "switch")
 
 
+def statement_annotations(stmt: dict) -> list[str]:
+    return stmt.get("annotations") or []
+
+
+def is_preamble_statement(stmt: dict) -> bool:
+    """True for a top-level statement that is really FILE PREAMBLE and must be
+    emitted ABOVE `pipeline {}`, not inside it.
+
+    The case that matters in practice is the shared-library directive:
+
+        @Library('my-shared-lib@main') _
+
+    Groovy parses that as an ExpressionStatement wrapping an *annotated*
+    DeclarationExpression (the `_` is a throwaway variable that exists purely
+    to give the annotation something to attach to), so it shows up as an
+    ordinary top-level statement - which the stage classifier would otherwise
+    treat as a non-step statement and bury inside a `script {}` block. That is
+    always wrong: `@Library` is resolved by Jenkins when the Jenkinsfile is
+    COMPILED, so it must sit at the top of the file, before `pipeline {}`, in
+    Declarative exactly as in Scripted. (`@Library` written on an `import`
+    instead - `@Library('x') import com.foo.Bar` - needs no special handling:
+    imports live on the Groovy ModuleNode, not in the statement block, so they
+    never appear here and are already copied through with the leading lines.)
+
+    Any other annotated top-level statement (`@Field def x = ...`, `@Grab`,
+    ...) is script-level Groovy for the same compile-time reason, so the test
+    is on "carries an annotation", not on the annotation's name.
+    """
+    return bool(statement_annotations(stmt))
+
+
+def split_preamble(top_level: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split the top-level statements into (preamble, body).
+
+    Only a LEADING run of preamble statements is peeled off: an annotated
+    statement appearing after real pipeline code is not something we can hoist
+    without reordering the file, so it is left in the body and warned about by
+    the caller.
+    """
+    i = 0
+    while i < len(top_level) and is_preamble_statement(top_level[i]):
+        i += 1
+    return top_level[:i], top_level[i:]
+
+
 def looks_like_parallel_map(stmt: dict) -> bool:
     return (
         stmt.get("kind") == "call"
@@ -451,15 +496,53 @@ def convert(dump: dict, extractor: Extractor, report: Report) -> str:
     top_level = dump["topLevel"]
     method_decls = dump.get("methodDecls", [])
 
-    if len(top_level) == 1 and top_level[0].get("kind") == "call" and top_level[0].get("name") == "pipeline":
+    # Peel off file preamble (`@Library('x') _` and friends) BEFORE anything
+    # else looks at the statement list: those statements belong above
+    # pipeline {}, and leaving them in the body would both bury them in a
+    # script {} block (where Jenkins would never resolve the library) and
+    # break the "is the whole file one node {}?" test below.
+    preamble_stmts, body_stmts = split_preamble(top_level)
+
+    if (
+        len(body_stmts) == 1
+        and body_stmts[0].get("kind") == "call"
+        and body_stmts[0].get("name") == "pipeline"
+    ):
         report.warn("Input already appears to be a Declarative Pipeline (top-level `pipeline {}` block found) - nothing converted.")
-        return extractor.extract(top_level[0])
+        return extractor.lines_between(1, body_stmts[0]["lastLine"] + 1).rstrip() + "\n"
 
     if not top_level:
         report.warn("No top-level statements found - nothing to convert.")
         return ""
 
-    preamble_end_line = top_level[0]["line"]
+    # Everything above the first non-preamble statement is copied through
+    # verbatim: shebang, comments, imports, and any `@Library` lines - imports
+    # interleaved BETWEEN @Library lines and the pipeline body included, which
+    # a preamble ending at the first statement of any kind would have dropped.
+    preamble_end_line = body_stmts[0]["line"] if body_stmts else len(extractor.lines) + 1
+    for st in preamble_stmts:
+        anns = ", ".join("@" + a for a in statement_annotations(st))
+        report.native(
+            f"{anns} at {extractor.span_str(st)} -> preserved verbatim above pipeline {{}} "
+            "(annotations are resolved at compile time and are legal in Declarative unchanged)"
+        )
+    for st in body_stmts:
+        if is_preamble_statement(st):
+            anns = ", ".join("@" + a for a in statement_annotations(st))
+            report.warn(
+                f"{anns} at {extractor.span_str(st)} appears AFTER pipeline code rather than at the "
+                "top of the file, so it was left where it is instead of being hoisted. Annotations "
+                "like @Library must precede the code that uses them - move it to the top of the "
+                "file by hand and re-run."
+            )
+
+    if not body_stmts:
+        report.warn(
+            "The file contains nothing but preamble (imports/@Library/annotated declarations) - "
+            "no pipeline body was found to convert."
+        )
+        return extractor.lines_between(1, preamble_end_line).rstrip() + "\n"
+
     preamble_methods = [m for m in method_decls if m["line"] < preamble_end_line]
     trailing_methods = [m for m in method_decls if m["line"] >= preamble_end_line]
 
@@ -467,13 +550,13 @@ def convert(dump: dict, extractor: Extractor, report: Report) -> str:
     for m in preamble_methods:
         report.native(f"preserved top-level function '{m['name']}' verbatim before pipeline {{}}")
 
-    node_calls = [s for s in top_level if s.get("kind") == "call" and s.get("name") == "node"]
+    node_calls = [s for s in body_stmts if s.get("kind") == "call" and s.get("name") == "node"]
 
     indent = INDENT
     stage_indent = indent + INDENT
     post_text = None
 
-    if node_calls and len(node_calls) == len(top_level):
+    if node_calls and len(node_calls) == len(body_stmts):
         if len(node_calls) == 1:
             nc = node_calls[0]
             label = extractor.extract(nc["positionalArgs"][0]) if nc.get("positionalArgs") else None
@@ -494,6 +577,35 @@ def convert(dump: dict, extractor: Extractor, report: Report) -> str:
                 label_clean = label.strip().strip("'\"") if label else None
                 body = nc["trailingClosure"]["body"] if nc.get("trailingClosure") else []
                 stages.extend(process_body_as_stages(body, extractor, stage_indent, report, agent_override=label_clean))
+    elif len(node_calls) == 1:
+        # One node {} wrapping the stages, plus other top-level statements
+        # around it (a very common shape once a shared library is in play:
+        # `@Library('x') _`, then a config map or a helper call, then the
+        # node). The node still determines the agent; the statements outside
+        # it are kept in their original order in synthetic stages rather than
+        # being lumped together with the node itself - which would have
+        # emitted a `node {}` block INSIDE the generated pipeline.
+        node_idx = next(i for i, st in enumerate(body_stmts) if st is node_calls[0])
+        nc = body_stmts[node_idx]
+        before, after = body_stmts[:node_idx], body_stmts[node_idx + 1:]
+        label = extractor.extract(nc["positionalArgs"][0]) if nc.get("positionalArgs") else None
+        agent_text = render_agent(label)
+        report.native(f"node({label or ''}) -> {agent_text.split('//')[0].strip()}")
+        report.warn(
+            f"{len(before) + len(after)} top-level statement(s) sit outside the node {{}} block. "
+            "In Scripted these run on the flyweight executor, before/after any agent is "
+            "allocated and with no workspace; Declarative has no equivalent slot, so they were "
+            "put into synthetic stage(s) that DO run on the agent. Review them - anything that "
+            "must not occupy an executor (or must run before agent allocation) needs a different "
+            "home, e.g. an environment{} entry or a `when` condition."
+        )
+        stages = []
+        if before:
+            stages.append(make_synthetic_stage("Setup", before, extractor, stage_indent, report))
+        node_body = nc["trailingClosure"]["body"] if nc.get("trailingClosure") else []
+        stages.extend(process_body_as_stages(node_body, extractor, stage_indent, report))
+        if after:
+            stages.append(make_synthetic_stage("Cleanup", after, extractor, stage_indent, report))
     else:
         report.warn(
             "No single top-level node {} (or sequence of node {} blocks) wrapping the "
@@ -502,7 +614,7 @@ def convert(dump: dict, extractor: Extractor, report: Report) -> str:
             "invoked (e.g. run via a node provided externally by the job configuration)."
         )
         agent_text = "agent any"
-        stages = process_body_as_stages(top_level, extractor, stage_indent, report)
+        stages = process_body_as_stages(body_stmts, extractor, stage_indent, report)
 
     out = []
     if preamble_text:
@@ -531,16 +643,29 @@ def convert(dump: dict, extractor: Extractor, report: Report) -> str:
 # --------------------------------------------------------------------------
 
 def syntax_check(path: str, report: Report):
-    groovy = shutil.which("groovy")
-    groovyc = shutil.which("groovyc")
-    if not groovyc:
-        report.warn("groovyc not found on PATH - generated output was not syntax-checked at all.")
-        return
-    import tempfile
-    with tempfile.TemporaryDirectory() as tmp:
-        proc = subprocess.run([groovyc, "-d", tmp, path], capture_output=True, text=True, timeout=120)
-        if proc.returncode != 0:
-            report.warn("groovyc reported a syntax error in the generated output:\n" + proc.stdout + proc.stderr)
+    """Re-parse the generated file with the same CONVERSION-phase Groovy parser
+    used on the input, proving the output is syntactically valid Groovy
+    (balanced braces, well-formed statements - i.e. that this tool did not
+    corrupt anything while slicing and re-nesting source text).
+
+    Deliberately a PARSE, not a compile (`groovyc`): compiling resolves class
+    references, and a Jenkinsfile's class references only exist inside a
+    running Jenkins. `@Library('x') _` fails to compile locally with "unable
+    to resolve class Library for annotation", and so does every `import
+    com.acme.SomethingFromTheSharedLibrary` that typically follows it. Those
+    are properties of the environment, not defects in the output, and
+    reporting them as errors made the tool declare low confidence on
+    perfectly good conversions of exactly the files that use shared
+    libraries. Declarative *structure* is validated by Jenkins's own
+    declarative-linter instead - see README, "Validation".
+    """
+    try:
+        run_ast_dump(path)
+    except (RuntimeError, ValueError) as exc:
+        report.warn(
+            "the generated output did not parse as valid Groovy - this is a bug in the "
+            f"conversion, do not use the output as-is:\n{exc}"
+        )
 
 
 # --------------------------------------------------------------------------

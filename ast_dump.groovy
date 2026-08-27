@@ -123,6 +123,21 @@ def describeCall(call, stmtSpan) {
     return result
 }
 
+// Statement-level annotations. The Jenkins shared-library directive
+// `@Library('foo') _` parses as an ExpressionStatement wrapping a
+// DeclarationExpression that CARRIES THE ANNOTATION (Expression extends
+// AnnotatedNode), and whose source span starts at the `@`, i.e. the span
+// covers the annotation too. Reporting the annotation names lets the Python
+// side recognise such a statement as file-preamble that must stay ABOVE
+// pipeline {} rather than treating it as pipeline body content.
+def annotationNamesOf(node) {
+    try {
+        return node.annotations.collect { it.classNode.nameWithoutPackage }
+    } catch (ignored) {
+        return []
+    }
+}
+
 def describeStmt(stmt) {
     def s = span(stmt)
     if (stmt instanceof ExpressionStatement) {
@@ -130,11 +145,11 @@ def describeStmt(stmt) {
         if (e instanceof MethodCallExpression) {
             return describeCall(e, s)
         } else if (e instanceof DeclarationExpression) {
-            return [kind: 'declaration'] + s
+            return [kind: 'declaration', annotations: annotationNamesOf(e)] + s
         } else if (e instanceof BinaryExpression && e.operation?.text == '=') {
-            return [kind: 'assignment'] + s
+            return [kind: 'assignment', annotations: annotationNamesOf(e)] + s
         } else {
-            return [kind: 'other_expr'] + s
+            return [kind: 'other_expr', annotations: annotationNamesOf(e)] + s
         }
     } else if (stmt instanceof IfStatement) {
         return [kind: 'if'] + s

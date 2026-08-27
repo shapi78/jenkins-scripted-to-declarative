@@ -52,7 +52,20 @@ or not it fully "understands" that code.
 - Top-level `import` statements, `@Library` annotations, and top-level `def`
   helper functions → preserved verbatim in their original relative position
   (before/after the `pipeline {}` block), since Declarative Pipeline
-  supports both
+  supports both. This covers both spellings of the shared-library directive:
+  `@Library('x') import com.foo.Bar` (an annotated import, which lives on
+  Groovy's ModuleNode and is simply copied through with the leading lines)
+  and the far more common `@Library('x') _`, which Groovy parses as a real
+  top-level *statement* - an annotated declaration of the throwaway variable
+  `_` - and which is therefore recognised explicitly as file preamble and
+  hoisted above `pipeline {}`. Everything from line 1 down to the first
+  statement that is *not* preamble is copied verbatim, so a shebang, an
+  `import` sitting between the `@Library` line and the pipeline body, and
+  comments all survive
+- A single `node {}` with other statements around it → the `node` still
+  supplies the `agent`, and the statements outside it become synthetic
+  `Setup`/`Cleanup` stages (flagged: in Scripted they ran on the flyweight
+  executor with no workspace, whereas the generated stages run on the agent)
 
 ## The classification rule (what needs `script {}`)
 
@@ -136,12 +149,23 @@ sequentially either way.
 
 ## Validation
 
-`scripted_to_declarative.py` runs `groovyc` on its own output automatically
-if it's on `PATH` (same approach as the Job DSL converter) - this proves the
-output is syntactically valid Groovy. It does **not** prove the output is a
-*valid Declarative Pipeline* (a syntactically fine Groovy file can still be
-missing a required section, or misuse a directive) or that it's
-behaviorally equivalent to the original Scripted pipeline.
+`scripted_to_declarative.py` re-parses its own output automatically, with
+the same Groovy parser (CONVERSION phase, via `ast_dump.groovy`) it used to
+read the input - this proves the output is syntactically valid Groovy, i.e.
+that the conversion did not corrupt anything while slicing and re-nesting
+source text. It does **not** prove the output is a *valid Declarative
+Pipeline* (a syntactically fine Groovy file can still be missing a required
+section, or misuse a directive) or that it's behaviorally equivalent to the
+original Scripted pipeline.
+
+The check is deliberately a parse and not a `groovyc` compile: compiling
+resolves class references, and a Jenkinsfile's class references only exist
+inside a running Jenkins. `@Library('x') _` fails to compile locally with
+"unable to resolve class Library for annotation", as does every `import
+com.acme.SomethingFromTheSharedLibrary` that usually follows it - so a
+compile-based check reported errors that were properties of the local
+environment rather than defects in the output, on exactly the files that
+use shared libraries.
 
 For real validation, use Jenkins's own Declarative Linter, against a Jenkins
 instance with the versions of Jenkins/plugins you actually run:
@@ -158,5 +182,5 @@ This actually validates the Declarative structure (required sections,
 correct directive usage) without running a real build. It's the closest
 equivalent for this tool to what the Job DSL Test Harness is for
 `convert.py` - run it before trusting a converted Jenkinsfile, and treat a
-clean `groovyc` check alone as "parses," not "correct."
+clean parse check alone as "parses," not "correct."
 # jenkins-scripted-to-declarative
