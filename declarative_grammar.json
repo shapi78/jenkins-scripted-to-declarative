@@ -1,0 +1,329 @@
+{
+  "_meta": {
+    "title": "Declarative Pipeline grammar dictionary",
+    "purpose": [
+      "A machine-readable dictionary of the identifiers that are legal in a Jenkins",
+      "Declarative Pipeline: the directives (which are a CLOSED set defined by the",
+      "pipeline-model-definition plugin's own grammar) and the steps (which are an",
+      "OPEN set - every plugin contributes more).",
+      "",
+      "This file exists so that the claims scripted_to_declarative.py makes about",
+      "Declarative syntax are auditable data rather than knowledge baked into prose",
+      "and code comments. It follows the same rule as the converter itself: nothing",
+      "in here is written from memory or inferred. Every identifier below was read",
+      "off Jenkins's own documentation, and anything that could not be verified there",
+      "is listed under `unverified` rather than being quietly included."
+    ],
+    "verified_on": "2026-08-27",
+    "sources": [
+      "https://www.jenkins.io/doc/book/pipeline/syntax/",
+      "https://www.jenkins.io/doc/book/pipeline/shared-libraries/",
+      "https://www.jenkins.io/doc/pipeline/steps/pipeline-model-definition/",
+      "https://www.jenkins.io/doc/pipeline/steps/workflow-basic-steps/",
+      "https://www.jenkins.io/doc/pipeline/steps/workflow-durable-task-step/",
+      "https://www.jenkins.io/doc/pipeline/steps/workflow-scm-step/",
+      "https://www.jenkins.io/doc/pipeline/steps/workflow-cps/"
+    ],
+    "closed_vs_open": {
+      "closed": [
+        "sections", "stage_directives", "agent", "post_conditions", "options",
+        "parameters", "triggers", "when", "matrix", "input", "tools"
+      ],
+      "open": [
+        "steps - any plugin can contribute a step, and Declarative does NOT validate",
+        "step NAMES, only statement SHAPE. `steps.core` below is therefore a grounded",
+        "subset (the steps shipped by the standard Pipeline plugins), never a whitelist.",
+        "Do not use it to reject a step you do not recognise."
+      ]
+    },
+    "structural_rules": [
+      "A `stage` must have one and only one of `steps`, `stages`, `parallel`, or `matrix`.",
+      "It is not possible to nest a `parallel` or `matrix` block within a `stage` directive if that `stage` directive is itself nested within a `parallel` or `matrix` block.",
+      "A `steps` block may contain only step invocations - not assignments, not if/for/while/try/switch, not bare expressions. `script` is the documented escape hatch for those.",
+      "The 'must be a step' rule applies only to what `steps` directly enumerates. Groovy nested inside a step's own closure argument (dir, withEnv, timeout, retry, catchError, script, ...) is ordinary CPS Groovy and is not restricted.",
+      "`@Library('x') _` is a compile-time annotation and belongs ABOVE the `pipeline` block, never inside it."
+    ]
+  },
+
+  "sections": {
+    "_note": "Directives valid directly inside the top-level `pipeline` block.",
+    "pipeline": "The outermost block. Required; everything else nests inside it.",
+    "agent": "Where the pipeline (or stage) executes. Required at top level.",
+    "stages": "Container for one or more `stage` blocks. Required at top level.",
+    "post": "Steps run at the end of the pipeline (or stage), keyed by build result.",
+    "environment": "Key/value environment variables. Valid at pipeline AND stage level.",
+    "options": "Pipeline-specific options (see `options.pipeline`).",
+    "parameters": "Build parameters prompted for at trigger time (see `parameters`).",
+    "triggers": "Automated triggers (see `triggers`).",
+    "tools": "Tools to auto-install and put on the PATH (see `tools`)."
+  },
+
+  "stage_directives": {
+    "_note": "Directives valid inside a `stage` block.",
+    "agent": "Per-stage agent; overrides the pipeline agent.",
+    "environment": "Per-stage environment variables.",
+    "options": "Per-stage options (see `options.stage`).",
+    "post": "Per-stage post conditions.",
+    "tools": "Per-stage tool installations.",
+    "input": "Pause and prompt for input before the stage runs (see `input`).",
+    "when": "Condition determining whether the stage runs (see `when`).",
+    "steps": "The stage's steps. Mutually exclusive with stages/parallel/matrix.",
+    "stages": "Sequential nested stages. Mutually exclusive with steps/parallel/matrix.",
+    "parallel": "Parallel nested stages. Mutually exclusive with steps/stages/matrix.",
+    "matrix": "Matrix of stages over one or more axes. Mutually exclusive with steps/stages/parallel."
+  },
+
+  "agent": {
+    "types": {
+      "any": "Run on any available agent.",
+      "none": "No global agent; every stage must declare its own.",
+      "label": "Run on an agent matching the label.",
+      "node": "Like `label`, but allows additional options such as customWorkspace.",
+      "docker": "Run inside a Docker container.",
+      "dockerfile": "Build an image from a Dockerfile in the repo and run inside it.",
+      "kubernetes": "Run in a Kubernetes pod."
+    },
+    "common_options": {
+      "label": "Agent label to run on.",
+      "customWorkspace": "Run in a specific workspace directory.",
+      "reuseNode": "Reuse the workspace/node from the top-level agent instead of allocating a new one.",
+      "args": "Arguments passed directly to `docker run`."
+    },
+    "docker_options": {
+      "image": "Image to pull and run.",
+      "registryUrl": "Docker registry URL.",
+      "registryCredentialsId": "Credentials ID for the registry."
+    },
+    "dockerfile_options": {
+      "filename": "Name of the Dockerfile (default `Dockerfile`).",
+      "dir": "Directory containing the Dockerfile, for a non-root build context.",
+      "additionalBuildArgs": "Extra arguments passed to `docker build`.",
+      "label": "Agent label on which to build and run the container."
+    },
+    "kubernetes_options": {
+      "defaultContainer": "Container in the pod to run steps in by default.",
+      "yaml": "Pod spec, as YAML."
+    }
+  },
+
+  "post_conditions": {
+    "always": "Run regardless of the completion status.",
+    "changed": "Run only if the current run's status differs from the previous run's.",
+    "fixed": "Run only if the current run succeeded and the previous run failed or was unstable.",
+    "regression": "Run only if the current run's status is worse than the previous run's.",
+    "aborted": "Run only if the run was aborted.",
+    "failure": "Run only if the run failed.",
+    "success": "Run only if the run succeeded.",
+    "unstable": "Run only if the run was unstable.",
+    "unsuccessful": "Run only if the run was not successful.",
+    "cleanup": "Run after every other post condition, regardless of status."
+  },
+
+  "options": {
+    "pipeline": {
+      "buildDiscarder": "Discard old builds / artifacts.",
+      "checkoutToSubdirectory": "Check out to a subdirectory of the workspace.",
+      "disableConcurrentBuilds": "Prevent concurrent executions of the pipeline.",
+      "disableResume": "Do not resume the pipeline if the controller restarts.",
+      "newContainerPerStage": "With a docker/dockerfile agent, run each stage in a new container.",
+      "overrideIndexTriggers": "Override the branch-indexing trigger default.",
+      "preserveStashes": "Preserve stashes from completed builds, for stage restarts.",
+      "quietPeriod": "Quiet period, in seconds, for the pipeline.",
+      "retry": "Retry the whole pipeline the given number of times on failure.",
+      "skipDefaultCheckout": "Skip the implicit `checkout scm` in `agent` directives.",
+      "skipStagesAfterUnstable": "Skip remaining stages once the build is unstable.",
+      "timeout": "Timeout for the whole pipeline, after which it is aborted.",
+      "timestamps": "Prepend timestamps to console output.",
+      "parallelsAlwaysFailFast": "Apply failFast to every parallel stage in the pipeline.",
+      "disableRestartFromStage": "Disable restarting the pipeline from a stage."
+    },
+    "stage": {
+      "skipDefaultCheckout": "Skip the implicit `checkout scm` for this stage.",
+      "timeout": "Timeout for this stage.",
+      "retry": "Retry this stage the given number of times on failure.",
+      "timestamps": "Prepend timestamps to this stage's console output."
+    },
+    "parallel": {
+      "failFast": "Abort all parallel branches as soon as one fails. Written `failFast true` inside the stage containing the `parallel` block."
+    }
+  },
+
+  "parameters": {
+    "string": "Single-line string parameter.",
+    "text": "Multi-line string parameter.",
+    "booleanParam": "Boolean parameter.",
+    "choice": "Choice parameter, selected from a list.",
+    "password": "Password parameter."
+  },
+
+  "triggers": {
+    "cron": "Run on a cron-style schedule.",
+    "pollSCM": "Poll the SCM on a cron-style schedule.",
+    "upstream": "Run when an upstream job completes with a given result."
+  },
+
+  "when": {
+    "conditions": {
+      "branch": "Run when the branch name matches. Supports a `comparator`.",
+      "buildingTag": "Run when building a tag.",
+      "changelog": "Run when the changelog matches a regular expression.",
+      "changeset": "Run when the changeset contains matching files. Supports `comparator` and `caseSensitive`.",
+      "changeRequest": "Run when building a change request (PR/MR). Supports a `comparator`.",
+      "environment": "Run when an environment variable has a given value.",
+      "equals": "Run when the expected value equals the actual value.",
+      "expression": "Run when the Groovy expression evaluates true.",
+      "tag": "Run when the tag name matches. Supports a `comparator`.",
+      "not": "Negate the nested condition.",
+      "allOf": "Run when all nested conditions are true.",
+      "anyOf": "Run when any nested condition is true.",
+      "triggeredBy": "Run when the build was triggered by the given cause."
+    },
+    "evaluation_options": {
+      "beforeAgent": "Evaluate the `when` condition before entering the agent.",
+      "beforeInput": "Evaluate the `when` condition before the `input` directive.",
+      "beforeOptions": "Evaluate the `when` condition before the stage `options`."
+    },
+    "condition_arguments": {
+      "comparator": "Matching mode for branch/changeset/tag/changeRequest.",
+      "caseSensitive": "Case sensitivity for changeset matching."
+    }
+  },
+
+  "matrix": {
+    "matrix": "Declares the matrix.",
+    "axes": "Container for `axis` declarations.",
+    "axis": "One axis of the matrix.",
+    "name": "Name of an axis (inside `axis`) or of an excluded axis (inside `exclude`).",
+    "values": "Values of an axis.",
+    "excludes": "Container for `exclude` declarations.",
+    "exclude": "One excluded combination of axis values.",
+    "notValues": "Values to exclude, inside an `exclude`.",
+    "stages": "The stages run for every cell of the matrix.",
+    "_cell_directives": [
+      "agent", "environment", "input", "options", "post", "tools", "when"
+    ]
+  },
+
+  "input": {
+    "message": "Prompt shown to the user. Required.",
+    "id": "Identifier for the input, defaulting to the stage name.",
+    "ok": "Text of the OK button.",
+    "submitter": "Users/groups permitted to submit.",
+    "submitterParameter": "Environment variable to populate with the submitter's name.",
+    "parameters": "Parameters prompted for alongside the input."
+  },
+
+  "tools": {
+    "_note": "Tool types documented on the syntax page. A tool must also be configured under Manage Jenkins > Tools.",
+    "maven": "Maven installation.",
+    "jdk": "JDK installation.",
+    "gradle": "Gradle installation."
+  },
+
+  "environment": {
+    "_note": "Valid inside the `pipeline` block or within `stage` directives.",
+    "credentials": {
+      "_description": "Special helper method accessing pre-defined Credentials by identifier.",
+      "Secret Text": "The variable is set to the secret text content.",
+      "Secret File": "The variable is set to the location of a temporarily created file.",
+      "Username and password": "The variable is set to `username:password`, and MYVARNAME_USR and MYVARNAME_PSW are also defined.",
+      "SSH with Private Key": "The variable is set to the location of a temporarily created key file, and MYVARNAME_USR and MYVARNAME_PSW (the passphrase) are also defined."
+    }
+  },
+
+  "steps": {
+    "_note": [
+      "OPEN SET. Declarative does not validate step names - any plugin can add a step,",
+      "and a call to a function you defined yourself is equally legal. The lists below",
+      "are the steps shipped by the standard Pipeline plugins, grounded in the plugin",
+      "documentation, and exist for reference and tooling hints - NOT as a whitelist.",
+      "`block: true` marks a step that takes a closure body. That distinction is the",
+      "one that matters most when converting Scripted to Declarative: a block step is",
+      "copied through as a single statement, and the Groovy inside its closure is not",
+      "subject to the 'must be a step' rule."
+    ],
+    "declarative_specific": {
+      "script": {"block": true, "desc": "Run arbitrary Pipeline script - the escape hatch for non-step Groovy inside steps."},
+      "validateDeclarativePipeline": {"block": false, "desc": "Validate a file containing a Declarative Pipeline."},
+      "envVarsForTool": {"block": false, "desc": "Fetch the environment variables for a given tool as a list of 'FOO=bar' strings."}
+    },
+    "core": {
+      "_workflow-basic-steps": {
+        "catchError": {"block": true, "desc": "Catch error and set build result to failure."},
+        "deleteDir": {"block": false, "desc": "Recursively delete the current directory from the workspace."},
+        "echo": {"block": false, "desc": "Print message."},
+        "error": {"block": false, "desc": "Error signal."},
+        "fileExists": {"block": false, "desc": "Verify if file exists in workspace."},
+        "isUnix": {"block": false, "desc": "Check if running on a Unix-like node."},
+        "mail": {"block": false, "desc": "Send email."},
+        "pwd": {"block": false, "desc": "Determine current directory."},
+        "readFile": {"block": false, "desc": "Read file from workspace."},
+        "retry": {"block": true, "desc": "Retry the body up to N times."},
+        "sleep": {"block": false, "desc": "Sleep for a given time."},
+        "stash": {"block": false, "desc": "Stash some files to be used later in the build."},
+        "step": {"block": false, "desc": "Invoke a general build step from freestyle or similar projects."},
+        "timeout": {"block": true, "desc": "Enforce time limit."},
+        "tool": {"block": false, "desc": "Use a tool from a predefined Tool Installation."},
+        "unstable": {"block": false, "desc": "Set stage result to unstable."},
+        "unstash": {"block": false, "desc": "Restore files previously stashed."},
+        "waitUntil": {"block": true, "desc": "Wait for condition."},
+        "warnError": {"block": true, "desc": "Catch error and set build and stage result to unstable."},
+        "withEnv": {"block": true, "desc": "Set environment variables."},
+        "wrap": {"block": true, "desc": "Apply a build wrapper around a block."},
+        "writeFile": {"block": false, "desc": "Write file to workspace."},
+        "archive": {"block": false, "desc": "Archive artifacts."},
+        "getContext": {"block": false, "desc": "Get contextual object from internal APIs."},
+        "unarchive": {"block": false, "desc": "Copy archived artifacts into the workspace."},
+        "withContext": {"block": true, "desc": "Use contextual object from internal APIs within a block."}
+      },
+      "_workflow-durable-task-step": {
+        "bat": {"block": false, "desc": "Execute a Windows batch script."},
+        "dir": {"block": true, "desc": "Change current directory for the body."},
+        "node": {"block": true, "desc": "Allocate an executor and workspace on a node. SCRIPTED ONLY at pipeline level - in Declarative this is expressed as `agent`."},
+        "powershell": {"block": false, "desc": "Execute a Windows PowerShell script (version 3 or later)."},
+        "pwsh": {"block": false, "desc": "Execute a PowerShell Core 6+ script."},
+        "sh": {"block": false, "desc": "Run a Bourne shell script, typically on a Unix node."},
+        "ws": {"block": true, "desc": "Allocate a workspace, optionally in a specific directory."}
+      },
+      "_workflow-scm-step": {
+        "checkout": {"block": false, "desc": "Check out from version control."},
+        "readScmFile": {"block": false, "desc": "Read file from SCM."}
+      },
+      "_workflow-cps": {
+        "load": {"block": false, "desc": "Evaluate a Groovy source file into the Pipeline script."},
+        "parallel": {"block": false, "desc": "Execute in parallel. Takes a map of branch name to closure; in Declarative there is also a `parallel` DIRECTIVE, which is different."}
+      },
+      "_workflow-cps-global-lib": {
+        "library": {"block": false, "desc": "Load a shared library dynamically at runtime. Arguments: `identifier` (e.g. 'my-lib@master'), and optionally `retriever`. The compile-time alternative is the `@Library` annotation above the pipeline block."}
+      }
+    }
+  },
+
+  "shared_libraries": {
+    "_note": "Not a Declarative directive - `@Library` is a Groovy ANNOTATION, resolved when the Jenkinsfile is compiled, so it must appear above the `pipeline` block in Declarative exactly as in Scripted.",
+    "annotation_forms": [
+      "@Library('my-shared-library') _",
+      "@Library('my-shared-library@1.0') _",
+      "@Library(['my-shared-library', 'otherlib@abc1234']) _",
+      "@Library('my-shared-library') import com.example.Helper"
+    ],
+    "step_forms": [
+      "library 'my-shared-library'",
+      "library 'my-shared-library@master'",
+      "library \"my-shared-library@$BRANCH_NAME\"",
+      "library identifier: 'custom-lib@master', retriever: modernSCM([$class: 'GitSCMSource', remote: '...', credentialsId: '...'])"
+    ]
+  },
+
+  "unverified": {
+    "_note": [
+      "Identifiers that are widely used in the wild but that could NOT be confirmed on",
+      "the Jenkins documentation pages listed in _meta.sources on the verification date.",
+      "They are recorded here rather than in the dictionary proper so that nothing above",
+      "is asserted without a source. Check them against the plugin versions you actually",
+      "run - e.g. with the declarative-linter - before relying on them."
+    ],
+    "libraries": "A `libraries { lib('my-lib@master') }` directive is commonly attributed to the pipeline-model-definition plugin, but does not appear on the Declarative syntax page, the Shared Libraries page, or the plugin's own step reference. Use the `@Library` annotation, which is documented.",
+    "isRestartedRun": "Sometimes listed as a `when` condition. Does not appear in the built-in conditions on the syntax page."
+  }
+}

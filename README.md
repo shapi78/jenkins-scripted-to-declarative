@@ -100,6 +100,49 @@ trying to interleave fine-grained `script{}` blocks around individual
 statements - simpler, and exactly as correct, since a stage's steps run
 sequentially either way.
 
+## The Declarative grammar dictionary
+
+`declarative_grammar.json` is a machine-readable dictionary of the
+identifiers that are legal in a Declarative Pipeline. It exists so that the
+claims this tool makes about Declarative syntax are auditable **data**
+rather than knowledge baked into prose and code comments.
+
+It follows the same rule as the converter: nothing in it is written from
+memory. Every identifier was read off Jenkins's own documentation (the
+source URLs and the verification date are recorded in the file's `_meta`
+block), and anything that could not be confirmed there is listed under
+`unverified` instead of being quietly included - currently the `libraries`
+directive and the `isRestartedRun` `when` condition, both widely used in the
+wild but absent from the pages checked.
+
+The dictionary is explicit about which sets are **closed** and which are
+**open**:
+
+- **Closed** (defined by the pipeline-model-definition grammar, so a name
+  outside the set is an error): `sections`, `stage_directives`, `agent`
+  types and options, `post_conditions`, `options` (pipeline and stage),
+  `parameters`, `triggers`, `when` conditions, `matrix`, `input`, `tools`.
+- **Open**: `steps`. Any plugin can contribute a step, and a call to a
+  function you wrote yourself is equally legal - which is exactly why this
+  converter classifies statement *shape* and never step *names*. The
+  `steps.core` entries are the steps shipped by the standard Pipeline
+  plugins, provided for reference and tooling hints; **do not** use them as
+  a whitelist to reject an unrecognised step.
+
+Each step entry carries a `block` flag marking whether it takes a closure
+body. That is the distinction that matters most when converting Scripted to
+Declarative: a block step (`dir`, `withEnv`, `timeout`, `retry`,
+`catchError`, ...) is copied through as a single statement, and the Groovy
+inside its closure is *not* subject to the "must be a step" rule - see "The
+classification rule" above.
+
+The file also records the structural rules the converter relies on (a
+`stage` must have exactly one of `steps`/`stages`/`parallel`/`matrix`;
+`@Library` is a compile-time annotation that belongs above the `pipeline`
+block), and the documented `@Library` annotation and `library` step forms.
+
+It is currently reference data - the converter does not read it at runtime.
+
 ## Known limitations (things this deliberately does NOT attempt)
 
 - **Dynamic/conditional stage generation** (`if`/`for`/`while` used at a
